@@ -26,13 +26,13 @@ import shutil
 from .superpower_util import load_abilities, get_daily_superpower  # 新增导入
 
 @register(
-    "steam_status_monitor_V2",
+    "steam_status_monitor_V3",
     "Maoer",
     "Steam状态监控插件V2版",
-    "3.1.0",
+    "3.1.1",
     "https://github.com/Maoer233/astrbot_plugin_steam_status_monitor"
 )
-class SteamStatusMonitorV2(Star):
+class SteamStatusMonitorV3(Star):
     def _get_group_data_path(self, group_id, key):
         """获取分群数据文件路径"""
         return os.path.join(self.data_dir, f"group_{group_id}_{key}.json")
@@ -412,6 +412,7 @@ class SteamStatusMonitorV2(Star):
         self.play_records = {}              # {date_str: {steamid: {gameid: {name, minutes}}}}
         self._recorded_quit_cache = {}      # {(steamid, gameid): timestamp} 去重用
         self.rank_push_groups = []          # 开启了每日排行榜推送的群列表
+        self.rank_push_all = False           # True=全群统一推送全局排行（只渲染一次）
         self._last_rank_push_date = None    # 记录上次推送日期，防止同一天重复推送
         self._load_play_records()
         self._load_rank_push_groups()
@@ -420,10 +421,13 @@ class SteamStatusMonitorV2(Star):
         '''插件启动后10秒内进行一次全员初始化轮询，设置每个SteamID的next_poll_time，并输出一次初始日志'''
         await asyncio.sleep(10)
         all_logs = []
+        seen_sids = set()  # 防止同一sid在多个群中被重复推送
         for group_id in self.group_steam_ids:
             steam_ids = self.group_steam_ids[group_id]
             group_lines = []
             for sid in steam_ids:
+                if sid in seen_sids: continue
+                seen_sids.add(sid)
                 msg = await self.check_status_change(group_id, single_sid=sid)
                 if msg:
                     group_lines.append(msg)
@@ -492,7 +496,7 @@ class SteamStatusMonitorV2(Star):
                 now_dt = datetime.now()
                 if now_dt.hour == 8 and now_dt.minute == 30:
                     push_date_key = self._get_day_key(-1)
-                    if self._last_rank_push_date != push_date_key and hasattr(self, 'rank_push_groups') and self.rank_push_groups:
+                    if self._last_rank_push_date != push_date_key and hasattr(self, 'rank_push_groups') and (self.rank_push_groups or getattr(self, 'rank_push_all', False)):
                         self._last_rank_push_date = push_date_key
                         logger.info(f"[排行榜] 开始每日自动推送，目标群: {self.rank_push_groups}")
                         asyncio.create_task(self._daily_rank_push())
@@ -1050,9 +1054,12 @@ class SteamStatusMonitorV2(Star):
                         self.group_start_play_times[group_id][sid] = int(time.time())
         yield event.plain_result("本群Steam状态监控启动完成喔！ヾ(≧ω≦)ゞ")
 
-    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("steam addid")
     async def steam_addid(self, event: AstrMessageEvent, steamid: str):
+        if not self._check_perm(event, 3):
+            async for r in self._deny(event):
+                yield r
+            return
         '''添加SteamID到本群监控列表（分群），支持逗号分隔多个ID，支持SteamID/个人资料链接/自定义ID/好友码'''
         group_id = str(event.get_group_id()) if hasattr(event, 'get_group_id') else 'default'
         # 兼容逗号、句号、空格分隔（修复 #8 评论指出的文档说逗号但代码用句号的 bug）
@@ -1119,6 +1126,10 @@ class SteamStatusMonitorV2(Star):
 
     @filter.command("steam list")
     async def steam_list(self, event: AstrMessageEvent):
+        if not self._check_perm(event, 2):
+            async for r in self._deny(event):
+                yield r
+            return
         '''列出本群所有玩家当前状态（分群）'''
         group_id = str(event.get_group_id()) if hasattr(event, 'get_group_id') else 'default'
         steam_ids = self.group_steam_ids.get(group_id, [])
@@ -1353,6 +1364,10 @@ class SteamStatusMonitorV2(Star):
 
     @filter.command("steam rank")
     async def steam_rank(self, event: AstrMessageEvent, period: str = ""):
+        if not self._check_perm(event, 2):
+            async for r in self._deny(event):
+                yield r
+            return
         '''查看本群玩家游戏时长排行榜（默认今日，可选 week/month）'''
         group_id = event.get_group_id() or "default"
         period = period.strip().lower()
@@ -1372,6 +1387,10 @@ class SteamStatusMonitorV2(Star):
 
     @filter.command("steam allrank")
     async def steam_allrank(self, event: AstrMessageEvent, period: str = ""):
+        if not self._check_perm(event, 2):
+            async for r in self._deny(event):
+                yield r
+            return
         '''查看所有群玩家游戏时长排行榜（默认今日，可选 week/month）'''
         period = period.strip().lower()
         if period == "week":
@@ -1389,16 +1408,38 @@ class SteamStatusMonitorV2(Star):
             yield result
 
     @filter.command("steam rank_on")
-    async def steam_rank_on(self, event: AstrMessageEvent):
-        '''开启本群每日8:30自动推送昨日排行榜'''
-        group_id = event.get_group_id() or "default"
-        if group_id not in self.rank_push_groups:
-            self.rank_push_groups.append(group_id)
+    
+    @filter.command("steam rank_on")
+    async def steam_rank_on(self, event: AstrMessageEvent, param: str = ""):
+        if not self._check_perm(event, 3):
+            async for r in self._deny(event):
+                yield r
+            return
+        '''开启本群每日排行榜推送；参数 all 则所有群统一推送全局排行（只渲染一次）'''
+        if not self._check_perm(event, 3):
+            async for r in self._deny(event):
+                yield r
+            return
+        param = param.strip().lower()
+        if param == "all":
+            self.rank_push_all = True
+            self.rank_push_groups = []
             self._save_rank_push_groups()
-        yield event.plain_result(f"已开启本群每日排行榜自动推送，将于每天 8:30 推送昨日（凌晨4:00~次日4:00）排行榜。")
+            yield event.plain_result("已开启全群每日排行榜自动推送（全局排行，只渲染一次），将于每天 8:30 推送昨日排行榜。")
+        else:
+            self.rank_push_all = False
+            group_id = event.get_group_id() or "default"
+            if group_id not in self.rank_push_groups:
+                self.rank_push_groups.append(group_id)
+                self._save_rank_push_groups()
+            yield event.plain_result(f"已开启本群每日排行榜自动推送，将于每天 8:30 推送昨日（凌晨4:00~次日4:00）排行榜。")
 
     @filter.command("steam rank_off")
     async def steam_rank_off(self, event: AstrMessageEvent):
+        if not self._check_perm(event, 3):
+            async for r in self._deny(event):
+                yield r
+            return
         '''关闭本群每日排行榜自动推送'''
         group_id = event.get_group_id() or "default"
         if group_id in self.rank_push_groups:
@@ -1408,6 +1449,10 @@ class SteamStatusMonitorV2(Star):
 
     @filter.command("steam help")
     async def steam_help(self, event: AstrMessageEvent):
+        if not self._check_perm(event, 2):
+            async for r in self._deny(event):
+                yield r
+            return
         '''显示所有指令帮助'''
         help_text = (
             "Steam状态监控插件指令：\n"
@@ -1434,6 +1479,10 @@ class SteamStatusMonitorV2(Star):
 
     @filter.command("steam openbox")
     async def steam_openbox(self, event: AstrMessageEvent, steamid: str):
+        if not self._check_perm(event, 2):
+            async for r in self._deny(event):
+                yield r
+            return
         '''查询并格式化展示指定SteamID的全部API返回信息（中文字段名，头像图片附加，位置ID合并，状态字段直观显示）'''
         if not self.API_KEY:
             yield event.plain_result("未配置 Steam API Key，请先在插件配置中填写 steam_api_key。")
@@ -1461,15 +1510,17 @@ class SteamStatusMonitorV2(Star):
                 task.cancel()
         yield event.plain_result(f"已为本群彻底关闭Steam监控，轮询已停止。使用 /steam on 可重新启动。")
 
-    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("steam achievement_on")
     async def steam_achievement_on(self, event: AstrMessageEvent):
+        if not self._check_perm(event, 3):
+            async for r in self._deny(event):
+                yield r
+            return
         group_id = str(event.get_group_id()) if hasattr(event, 'get_group_id') else 'default'
         self.group_achievement_enabled[group_id] = True
         yield event.plain_result(f"已为本群开启Steam成就推送。")
 
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("steam achievement_of")
+    @filter.command("steam achievement_off")
     async def steam_achievement_off(self, event: AstrMessageEvent):
         group_id = str(event.get_group_id()) if hasattr(event, 'get_group_id') else 'default'
         self.group_achievement_enabled[group_id] = False
@@ -2205,41 +2256,90 @@ class SteamStatusMonitorV2(Star):
 
     @filter.command("steam alllist")
     async def steam_alllist(self, event: AstrMessageEvent):
-        '''列出所有群聊绑定的steam情况，包含群聊分组，玩家名，在线情况，下次轮询时间'''
-        lines = []
+        if not self._check_perm(event, 2):
+            async for r in self._deny(event):
+                yield r
+            return
+        '''所有群聊玩家状态（图片版，含群号+SteamID+下次轮询）'''
+        from .steam_list_render import render_steam_list_image
+        from .game_start_render import get_avatar_frame_url, get_avatar_frame_path
+        user_list = []
         now = int(time.time())
         for group_id, steam_ids in self.group_steam_ids.items():
-            lines.append(f"群组: {group_id}")
-            last_states = self.group_last_states.get(group_id, {})
+            start_play_times = self.group_start_play_times.get(group_id, {})
             next_poll = self.next_poll_time.get(group_id, {})
             for sid in steam_ids:
-                status = last_states.get(sid)
-                name = status.get('name') if status else sid
-                gameid = status.get('gameid') if status else None
-                game = status.get('gameextrainfo') if status else None
-                lastlogoff = status.get('lastlogoff') if status else None
-                personastate = status.get('personastate', 0) if status else 0
-                next_time = next_poll.get(sid, now)
-                seconds_left = int(next_time - now)
-                if seconds_left < 60:
-                    poll_str = f"下次轮询{seconds_left}秒后"
-                else:
-                    poll_str = f"下次轮询{seconds_left//60}分钟后"
+                nt = next_poll.get(sid, now)
+                sl = int(nt - now)
+                p_str = f"下次轮询{sl}秒后" if sl < 60 else f"下次轮询{sl//60}分钟后"
+                status = await self.fetch_player_status(sid, retry=1)
+                if not status:
+                    user_list.append({'sid': sid, 'name': sid, 'status': 'error', 'avatar_url': '', 'game': '', 'gameid': '', 'play_str': '获取失败', 'group_id': group_id, 'poll_str': p_str})
+                    continue
+                name = status.get('name') or sid
+                gameid = status.get('gameid')
+                game = status.get('gameextrainfo')
+                avatar_url = status.get('avatarfull') or status.get('avatar') or ''
+                zh_game_name = await self.get_chinese_game_name(gameid, game) if gameid else (game or "未知游戏")
                 if gameid:
-                    state_str = f"🟢正在玩 {await self.get_chinese_game_name(gameid, game)}"
-                elif personastate and int(personastate) > 0:
-                    state_str = "🟡在线"
-                elif lastlogoff:
-                    hours_ago = (now - int(lastlogoff)) / 3600
-                    state_str = f"⚪️离线，上次在线 {hours_ago:.1f} 小时前"
+                    st = start_play_times.get(sid, {}).get(gameid) if isinstance(start_play_times.get(sid), dict) else start_play_times.get(sid)
+                    ps = now - st if st else 0
+                    pm = ps / 60
+                    ps_str = f"{pm:.1f}分钟" if pm < 60 else f"{pm/60:.1f}小时"
+                    user_list.append({'sid': sid, 'name': name, 'status': 'playing', 'avatar_url': avatar_url, 'game': zh_game_name, 'gameid': gameid, 'play_str': ps_str, 'group_id': group_id, 'poll_str': p_str})
+                elif status.get('personastate', 0) > 0:
+                    user_list.append({'sid': sid, 'name': name, 'status': 'online', 'avatar_url': avatar_url, 'game': '', 'gameid': '', 'play_str': '', 'group_id': group_id, 'poll_str': p_str})
+                elif status.get('lastlogoff'):
+                    ha = (now - int(status['lastlogoff'])) / 3600
+                    user_list.append({'sid': sid, 'name': name, 'status': 'offline', 'avatar_url': avatar_url, 'game': '', 'gameid': '', 'play_str': f"上次在线 {ha:.1f} 小时前", 'group_id': group_id, 'poll_str': p_str})
                 else:
-                    state_str = "⚪️离线"
-                lines.append(f"  {name}({sid}) - {state_str}（{poll_str}）")
-            lines.append("")
-        yield event.plain_result("\n".join(lines))
+                    user_list.append({'sid': sid, 'name': name, 'status': 'offline', 'avatar_url': avatar_url, 'game': '', 'gameid': '', 'play_str': '', 'group_id': group_id, 'poll_str': p_str})
+        # 获取头像框
+        avatar_frame_paths = {}
+        for u in user_list:
+            sid = u.get('sid', '')
+            if sid:
+                fp = get_avatar_frame_path(self.data_dir, sid, proxy=self.proxy)
+                if not fp:
+                    frame_url = await get_avatar_frame_url(sid, proxy=self.proxy)
+                    if frame_url:
+                        fp = get_avatar_frame_path(self.data_dir, sid, frame_url, proxy=self.proxy)
+                if fp:
+                    avatar_frame_paths[sid] = fp
+        font_path = self.get_font_path('NotoSansHans-Regular.otf')
+        # 获取封面
+        covers = {}
+        for u in user_list:
+            gid = u.get('gameid', '')
+            if gid:
+                from .game_start_render import get_cover_path
+                cp = await get_cover_path(self.data_dir, gid, u.get('game', ''), proxy=self.proxy)
+                if cp:
+                    covers[u['sid']] = cp
+        img_bytes = await render_steam_list_image(self.data_dir, user_list, font_path=font_path, proxy=self.proxy, avatar_frame_paths=avatar_frame_paths, covers=covers)
+        if img_bytes:
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+                tmp.write(img_bytes)
+                tmp_path = tmp.name
+            yield event.image_result(tmp_path)
+        else:
+            yield event.plain_result("渲染图片失败")
+
+    def _check_perm(self, event, min_level):
+        level = self.config.get('permission_level', 1)
+        needs_admin = True
+        if level >= 2 and min_level <= 2:
+            needs_admin = False
+        if level >= 3 and min_level <= 3:
+            needs_admin = False
+        if needs_admin:
+            return event.is_admin()
+        return True
+    async def _deny(self, event):
+        yield event.plain_result("权限不足：此指令需要管理员权限")
 
     def get_today_superpower(self, steamid):
-        """获取指定SteamID当天的超能力描述（用于图片渲染）"""
         from datetime import date
         today = date.today().isoformat()
         cache_key = (steamid, today)
