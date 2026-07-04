@@ -1415,7 +1415,7 @@ class SteamStatusMonitorV3(Star):
             async for r in self._deny(event):
                 yield r
             return
-        '''开启本群每日排行榜推送；参数 all 则所有群统一推送全局排行（只渲染一次）'''
+        '''已开启本群每日排行榜推送；可选参数 all 则推送全局排行'''
         if not self._check_perm(event, 3):
             async for r in self._deny(event):
                 yield r
@@ -1425,14 +1425,14 @@ class SteamStatusMonitorV3(Star):
             self.rank_push_all = True
             self.rank_push_groups = []
             self._save_rank_push_groups()
-            yield event.plain_result("已开启全群每日排行榜自动推送（全局排行，只渲染一次），将于每天 8:30 推送昨日排行榜。")
+            yield event.plain_result("已开启每日排行榜自动推送（全局排行）")
         else:
             self.rank_push_all = False
             group_id = event.get_group_id() or "default"
             if group_id not in self.rank_push_groups:
                 self.rank_push_groups.append(group_id)
                 self._save_rank_push_groups()
-            yield event.plain_result(f"已开启本群每日排行榜自动推送，将于每天 8:30 推送昨日（凌晨4:00~次日4:00）排行榜。")
+            yield event.plain_result(f"已开启本群每日排行榜自动推送。")
 
     @filter.command("steam rank_off")
     async def steam_rank_off(self, event: AstrMessageEvent):
@@ -1483,7 +1483,7 @@ class SteamStatusMonitorV3(Star):
             async for r in self._deny(event):
                 yield r
             return
-        '''查询并格式化展示指定SteamID的全部API返回信息（中文字段名，头像图片附加，位置ID合并，状态字段直观显示）'''
+        '''查询指定SteamID的全部API返回信息'''
         if not self.API_KEY:
             yield event.plain_result("未配置 Steam API Key，请先在插件配置中填写 steam_api_key。")
             return
