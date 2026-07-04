@@ -18,8 +18,10 @@ async def handle_steam_list(self, event, *, font_path: Optional[str] = None, pro
     start_play_times = self.group_start_play_times.get(group_id, {})
     user_list = []
     now = int(time.time())
-    for idx, sid in enumerate(steam_ids):
-        status = await self.fetch_player_status(sid, retry=1)
+    # 批量查询所有玩家状态，减少API调用次数
+    status_map = await self.fetch_player_statuses_batch(steam_ids) if steam_ids else {}
+    for sid in steam_ids:
+        status = status_map.get(sid)
         if not status:
             user_list.append({
                 'sid': sid,

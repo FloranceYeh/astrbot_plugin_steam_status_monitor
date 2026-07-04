@@ -178,6 +178,7 @@ async def render_steam_list_image(data_dir, user_list, font_path=None, proxy=Non
         card_draw.text((name_x, name_y), user['name'], font=font_name, fill=name_color)
         # 在线状态/游戏名
         status_y = name_y + 28
+        info_y = status_y  # 默认值，online/away/snooze/busy/offline无play_str时回退
         if user['status'] == 'playing':
             # 游戏名深绿色
             card_draw.text((name_x, status_y), f"正在玩：{user['game']}", font=font_game, fill=(131,175,80))

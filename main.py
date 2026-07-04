@@ -29,7 +29,7 @@ from .superpower_util import load_abilities, get_daily_superpower  # 新增导�
     "steam_status_monitor_V3",
     "Maoer",
     "Steam状态监控插件V2版",
-    "3.1.2",
+    "3.1.4",
     "https://github.com/Maoer233/astrbot_plugin_steam_status_monitor"
 )
 class SteamStatusMonitorV3(Star):
@@ -1028,8 +1028,10 @@ class SteamStatusMonitorV3(Star):
             self.group_last_states[group_id] = {}
         if group_id not in self.group_start_play_times:
             self.group_start_play_times[group_id] = {}
+        # 批量查询所有玩家状态，减少API调用
+        status_map = await self.fetch_player_statuses_batch(steam_ids) if steam_ids else {}
         for sid in steam_ids:
-            status = await self.fetch_player_status(sid)
+            status = status_map.get(sid)
             if status:
                 self.group_last_states[group_id][sid] = status
                 if status.get('gameid'):
@@ -2283,6 +2285,11 @@ class SteamStatusMonitorV3(Star):
         from .game_start_render import get_avatar_frame_url, get_avatar_frame_path
         user_list = []
         now = int(time.time())
+        # 收集所有SteamID并批量查询，减少API调用
+        all_sids = []
+        for gid_ in self.group_steam_ids:
+            all_sids.extend(self.group_steam_ids[gid_])
+        status_map = await self.fetch_player_statuses_batch(all_sids) if all_sids else {}
         for group_id, steam_ids in self.group_steam_ids.items():
             start_play_times = self.group_start_play_times.get(group_id, {})
             next_poll = self.next_poll_time.get(group_id, {})
@@ -2290,7 +2297,7 @@ class SteamStatusMonitorV3(Star):
                 nt = next_poll.get(sid, now)
                 sl = int(nt - now)
                 p_str = f"下次轮询{sl}秒后" if sl < 60 else f"下次轮询{sl//60}分钟后"
-                status = await self.fetch_player_status(sid, retry=1)
+                status = status_map.get(sid)
                 if not status:
                     user_list.append({'sid': sid, 'name': sid, 'status': 'error', 'avatar_url': '', 'game': '', 'gameid': '', 'play_str': '获取失败', 'group_id': group_id, 'poll_str': p_str})
                     continue
