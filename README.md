@@ -9,6 +9,7 @@
 - 支持定时轮询多个 SteamID 的状态，分群管理，每个群聊可独立配置监控玩家
 - 检测玩家上线、下线、开始/切换/退出游戏等状态变更，自动推送游戏启动/关闭提醒
 - 成就变动自动推送提醒
+- 游戏时长排行榜：支持  本群排行和  所有群排行，可按数字天数查询
 - 智能轮询 + 固定轮询双模式可切换，默认为1-30分钟查询一次状态，取决于steam的上次在线时间
 - 持久化记录玩家游玩日志，重启bot后状态不会丢失
 - **批量查询优化**：采用 Steam 官方批量接口（单次最多 100 个 ID），大幅降低 API 调用次数，从根本上避免触发 Steam 限流（HTTP 429 / x-eresult: 84）
@@ -70,6 +71,7 @@
 ![开始游戏示例](https://raw.githubusercontent.com/Maoer233/astrbot_plugin_steam_status_monitor/main/str.png)
 ![结束游戏示例](https://raw.githubusercontent.com/Maoer233/astrbot_plugin_steam_status_monitor/main/stop.png)
 ![成就推送示例](https://raw.githubusercontent.com/Maoer233/astrbot_plugin_steam_status_monitor/main/achievement.png)
+![排行榜示例](https://raw.githubusercontent.com/Maoer233/astrbot_plugin_steam_status_monitor/main/allrank.png)
 
 
 ## 指令列表
@@ -84,6 +86,10 @@
 - `/steam push_group [SteamID]` 添加id到联动推送的副群（轮询一次通知多个群聊）
 - `/steam delpush_group [SteamID]` 删除id联动推送的副群
 - `/steam openbox [SteamID]` 查看指定SteamID的全部详细信息
+- `/steam rank [天数]` 查看本群游戏时长排行榜（默认今日，可指定天数）
+- `/steam allrank [天数]` 查看所有群游戏时长排行榜（默认今日，可指定天数）
+- `/steam rank_on` 开启每日排行榜自动推送
+- `/steam rank_off` 关闭每日排行榜自动推送
 - `/steam rs` 清除所有状态并初始化
 - `/steam achievement_on` 开启本群Steam成就推送
 - `/steam achievement_off` 关闭本群Steam成就推送
@@ -109,6 +115,13 @@ pip install httpx pillow
 > 如果本项目对您的生活 / 工作产生了帮助，或者您关注本项目的未来发展，请给项目 Star，这是我维护这个开源项目的动力 ❤️。
 
 ## 更新记录
+- V3.1.0（2026/07/04）
+  - **排行榜功能**：新增游戏时长排行榜，支持 `steam rank` 本群排行和 `steam allrank` 所有群排行
+  - 参数由 week/month 改为任意数字天数（如 `steam rank 15`），默认返回当天
+  - 每天凌晨 4:00 为天分界点，定时播报默认早上 8:30 推送昨日排行榜
+  - `steam rank_on` / `steam rank_off` 开启/关闭每群排行榜自动推送
+  - 修复重启插件后已通知过的退出记录重复推送的问题
+
 - V3.0.0（2026/07/03）重大更新
   - **性能与稳定性大幅优化**：采用 Steam 官方批量查询接口（单次最多 100 个 ID），大幅降低 API 调用次数，从根本上避免触发 Steam 限流（HTTP 429 / x-eresult: 84）及 IP 被封禁；批量失败时自动降级为单查，保证可用性
   - **轮询架构重构**：重写全局轮询循环，按动态到点查询 + 异常隔离（`return_exceptions=True`），修复在线玩家不再轮询、离线玩家轮询间隔越来越长的问题
