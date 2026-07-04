@@ -15,8 +15,10 @@ import re
 from .achievement_monitor import AchievementMonitor
 from .game_start_render import render_game_start  # 新增导入
 from .game_end_render import render_game_end  # 新增导入
+from .rank_render import render_rank_image  # 排行榜渲染
 from PIL import Image as PILImage
 import io
+from datetime import datetime, timedelta
 import requests  # 新增导入
 import tempfile
 import traceback
@@ -80,6 +82,15 @@ class SteamStatusMonitorV2(Star):
                         self.group_recent_games[group_id] = json.load(f)
             except Exception as e:
                 logger.warning(f"加载 group_recent_games 失败: {e} (group_id={group_id})")
+        # 修复：已通知过的退出记录清除 last_states 中的旧 gameid
+        # 防止重启后首次轮询误判为刚退出重新推送通知
+        for group_id, sid_dict in self.group_pending_quit.items():
+            for sid, games in sid_dict.items():
+                for gameid, info in games.items():
+                    if info.get("notified") and self.group_last_states.get(group_id, {}).get(sid, {}).get("gameid") == gameid:
+                        self.group_last_states[group_id][sid]["gameid"] = None
+                        self.group_last_states[group_id][sid]["gameextrainfo"] = ""
+                        logger.info(f"[修复重推] 清除 {sid} 已通知过的退出状态 (gameid={gameid})")
 
     def _save_persistent_data(self, force=False):
         '''分群保存各群的状态数据。
@@ -128,6 +139,11 @@ class SteamStatusMonitorV2(Star):
                     json.dump(self.group_recent_games.get(group_id, []), f, ensure_ascii=False)
             except Exception as e:
                 logger.warning(f"保存 group_recent_games 失败: {e} (group_id={group_id})")
+        # 保存游玩时长记录（全局，不分群）
+        try:
+            self._save_play_records()
+        except Exception as e:
+            logger.warning(f"保存 play_records 失败: {e}")
 
     def _load_notify_session(self):
         path = os.path.join(self.data_dir, "notify_sessions.json")
@@ -238,6 +254,60 @@ class SteamStatusMonitorV2(Star):
         except Exception as e:
             logger.warning(f"保存 push_groups.json 失败: {e}")
 
+    # ========== 排行榜功能：游玩时长记录持久化 ==========
+
+    def _load_play_records(self):
+        """加载游玩时长记录"""
+        path = os.path.join(self.data_dir, "play_records.json")
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    self.play_records = json.load(f)
+            except Exception as e:
+                logger.warning(f"加载 play_records.json 失败: {e}")
+                self.play_records = {}
+        else:
+            self.play_records = {}
+
+    def _save_play_records(self):
+        """保存游玩时长记录，并自动清理超过30天的旧记录"""
+        if not hasattr(self, 'play_records'):
+            return
+        cutoff_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        cleaned = {}
+        for date_str, data in self.play_records.items():
+            if date_str >= cutoff_date:
+                cleaned[date_str] = data
+        self.play_records = cleaned
+        path = os.path.join(self.data_dir, "play_records.json")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self.play_records, f, ensure_ascii=False)
+        except Exception as e:
+            logger.warning(f"保存 play_records.json 失败: {e}")
+
+    def _load_rank_push_groups(self):
+        """加载开启了每日排行榜推送的群列表"""
+        path = os.path.join(self.data_dir, "rank_push_groups.json")
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    self.rank_push_groups = json.load(f)
+            except Exception as e:
+                logger.warning(f"加载 rank_push_groups.json 失败: {e}")
+                self.rank_push_groups = []
+        else:
+            self.rank_push_groups = []
+
+    def _save_rank_push_groups(self):
+        """保存开启了每日排行榜推送的群列表"""
+        path = os.path.join(self.data_dir, "rank_push_groups.json")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self.rank_push_groups, f, ensure_ascii=False)
+        except Exception as e:
+            logger.warning(f"保存 rank_push_groups.json 失败: {e}")
+
     def __init__(self, context: Context, config=None):
         # 插件运行状态标志，重启后自动丢失
         if hasattr(self, '_ssm_running') and self._ssm_running:
@@ -338,6 +408,13 @@ class SteamStatusMonitorV2(Star):
         # SGDB API Key 可在 https://www.steamgriddb.com/profile/preferences/api 获取
         self.SGDB_API_KEY = self.config.get('sgdb_api_key', '')
         self._load_push_groups()  # <--- 修复：确保push_groups属性初始化
+        # --- 排行榜功能：游玩时长记录 + 去重缓存 + 每日推送开关 ---
+        self.play_records = {}              # {date_str: {steamid: {gameid: {name, minutes}}}}
+        self._recorded_quit_cache = {}      # {(steamid, gameid): timestamp} 去重用
+        self.rank_push_groups = []          # 开启了每日排行榜推送的群列表
+        self._last_rank_push_date = None    # 记录上次推送日期，防止同一天重复推送
+        self._load_play_records()
+        self._load_rank_push_groups()
 
     async def init_poll_time_once(self):
         '''插件启动后10秒内进行一次全员初始化轮询，设置每个SteamID的next_poll_time，并输出一次初始日志'''
@@ -411,6 +488,14 @@ class SteamStatusMonitorV2(Star):
                     else:
                         logger.info("周期轮询成功")
                 self._last_round_logs.clear()
+                # 每日排行榜自动推送：8:30 检查并发送昨日排行榜（以凌晨4:00为一天分界）
+                now_dt = datetime.now()
+                if now_dt.hour == 8 and now_dt.minute == 30:
+                    push_date_key = self._get_day_key(-1)
+                    if self._last_rank_push_date != push_date_key and hasattr(self, 'rank_push_groups') and self.rank_push_groups:
+                        self._last_rank_push_date = push_date_key
+                        logger.info(f"[排行榜] 开始每日自动推送，目标群: {self.rank_push_groups}")
+                        asyncio.create_task(self._daily_rank_push())
                 # 节流保存：本轮有脏数据且超过间隔则落盘，避免每次 check_status_change 都写盘
                 if getattr(self, '_data_dirty', False) and (time.time() - getattr(self, '_last_save_time', 0)) >= getattr(self, '_save_interval', 300):
                     try:
@@ -663,7 +748,11 @@ class SteamStatusMonitorV2(Star):
             return fallback_name or "未知游戏"
         gid = str(gameid)
         if gid in self._game_name_cache:
-            return self._game_name_cache[gid]
+            cached = self._game_name_cache[gid]
+            # get_game_names 会缓存 (name_zh, name_en) 元组，需取中文名
+            if isinstance(cached, tuple):
+                return cached[0] if cached[0] else (cached[1] if len(cached) > 1 else "未知游戏")
+            return cached
         # 优先查中文名（l=schinese），再查英文名（l=en）
         url_zh = f"{self.STEAM_STORE_BASE}/api/appdetails?appids={gid}&l=schinese"
         url_en = f"{self.STEAM_STORE_BASE}/api/appdetails?appids={gid}&l=en"
@@ -1128,6 +1217,195 @@ class SteamStatusMonitorV2(Star):
         self._save_persistent_data(force=True)  # 清空后保存
         yield event.plain_result("Steam状态监控插件已重置，所有状态已清空。")
 
+    async def _daily_rank_push(self):
+        """每日8:30自动推送昨日（4:00~4:00）排行榜到已开启的群"""
+        try:
+            for group_id in list(self.rank_push_groups):
+                try:
+                    # 获取昨日数据：_get_rank_data 使用 _get_day_key(0) 作为基准，需要传入 days=1 统计当天
+                    # 但我们要前一天的数据，通过 _get_day_key(-1) 做基准
+                    # 简单方案：临时覆写 _get_day_key 的效果，直接传一个特殊值
+                    # 这里直接用 days=1 并让 _get_rank_data 获取当天(4:00-4:00)的数据
+                    # 但定时在8:30，_get_day_key(0) 返回的是当天的日期（如1月15日4:00之后）
+                    # 我们需要的是昨天的数据（1月14日4:00~1月15日4:00）
+                    # 因此把 days 设为从昨天开始统计1天
+                    rank_data = self._get_rank_data(days=1, group_id=group_id, base_day_offset=-1)
+                    if not rank_data:
+                        logger.info(f"[排行榜] 群 {group_id} 昨日无游玩记录，跳过推送")
+                        continue
+                    # 补充玩家信息
+                    sid_set = {p["sid"] for p in rank_data}
+                    sid_info = {}
+                    if sid_set:
+                        status_map = await self.fetch_player_statuses_batch(list(sid_set))
+                        for sid, info in status_map.items():
+                            sid_info[sid] = {
+                                "name": info.get("name") or sid,
+                                "avatar_url": info.get("avatarfull") or info.get("avatar")
+                            }
+                    for p in rank_data:
+                        info = sid_info.get(p["sid"], {})
+                        p["name"] = info.get("name", p["sid"][-8:])
+                        p["avatar_url"] = info.get("avatar_url")
+                        p["top_game_id"] = None
+                    # 反查封面gameid
+                    yesterday = self._get_day_key(-1)
+                    for p in rank_data:
+                        if not p["games"]:
+                            continue
+                        top_name = p["games"][0]["name"]
+                        day_data = self.play_records.get(yesterday, {})
+                        sid_games = day_data.get(p["sid"], {})
+                        for gid, ginfo in sid_games.items():
+                            if ginfo.get("name") == top_name:
+                                p["top_game_id"] = gid
+                                break
+
+                    async def cover_fetcher(gameid):
+                        return await self.get_game_cover_url(gameid)
+
+                    font_path = self.get_font_path('NotoSansHans-Regular.otf')
+                    img_bytes = await render_rank_image(
+                        self.data_dir, rank_data, "昨日",
+                        font_path=font_path, proxy=self.proxy,
+                        cover_fetcher=cover_fetcher
+                    )
+                    import tempfile
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+                        tmp.write(img_bytes)
+                        tmp_path = tmp.name
+                    # 发送到群
+                    session = getattr(self, 'notify_sessions', {}).get(group_id, None)
+                    if session:
+                        await self.context.send_message(session, MessageChain([
+                            Plain(f"📊 昨日游戏时长排行榜来啦！\n"),
+                            Image.fromFileSystem(tmp_path)
+                        ]))
+                        logger.info(f"[排行榜] 已推送昨日排行榜到群 {group_id}")
+                    else:
+                        logger.warning(f"[排行榜] 群 {group_id} 未找到推送会话，跳过")
+                except Exception as e:
+                    logger.error(f"[排行榜] 推送群 {group_id} 失败: {e}")
+        except Exception as e:
+            logger.error(f"[排行榜] 每日推送异常: {e}")
+
+    async def _render_and_send_rank(self, event, group_id, days, period_label, is_all=False):
+        """生成排行榜图片并发送"""
+        try:
+            rank_data = self._get_rank_data(days=days, group_id=None if is_all else group_id)
+            if not rank_data:
+                yield event.plain_result(f"暂无{period_label}游玩记录，玩家游戏结束后才会有数据。")
+                return
+            # 补充玩家昵称和头像URL
+            sid_set = {p["sid"] for p in rank_data}
+            sid_info = {}
+            if sid_set:
+                status_map = await self.fetch_player_statuses_batch(list(sid_set))
+                for sid, info in status_map.items():
+                    sid_info[sid] = {
+                        "name": info.get("name") or sid,
+                        "avatar_url": info.get("avatarfull") or info.get("avatar")
+                    }
+            for p in rank_data:
+                info = sid_info.get(p["sid"], {})
+                p["name"] = info.get("name", p["sid"][-8:])
+                p["avatar_url"] = info.get("avatar_url")
+                # 标记主玩游戏ID用于封面获取
+                if p["games"]:
+                    # 需要gameid来获取封面，从play_records中反查
+                    p["top_game_id"] = None
+            # 从play_records中反查每个玩家top游戏的gameid
+            for p in rank_data:
+                if not p["games"]:
+                    continue
+                top_name = p["games"][0]["name"]
+                # 在最近数据中找匹配的gameid
+                today = datetime.now().strftime("%Y-%m-%d")
+                for di in range(days):
+                    dk = (datetime.now() - timedelta(days=di)).strftime("%Y-%m-%d")
+                    day_data = self.play_records.get(dk, {})
+                    sid_games = day_data.get(p["sid"], {})
+                    for gid, ginfo in sid_games.items():
+                        if ginfo.get("name") == top_name:
+                            p["top_game_id"] = gid
+                            break
+                    if p.get("top_game_id"):
+                        break
+
+            # 封面获取回调
+            async def cover_fetcher(gameid):
+                return await self.get_game_cover_url(gameid)
+
+            font_path = self.get_font_path('NotoSansHans-Regular.otf')
+            img_bytes = await render_rank_image(
+                self.data_dir, rank_data, period_label,
+                font_path=font_path, proxy=self.proxy,
+                cover_fetcher=cover_fetcher
+            )
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+                tmp.write(img_bytes)
+                tmp_path = tmp.name
+            yield event.image_result(tmp_path)
+        except Exception as e:
+            logger.error(f"[排行榜] 渲染失败: {e}\n{traceback.format_exc()}")
+            yield event.plain_result(f"排行榜生成失败: {e}")
+
+    @filter.command("steam rank")
+    async def steam_rank(self, event: AstrMessageEvent, period: str = ""):
+        '''查看本群玩家游戏时长排行榜（默认今日，可选 week/month）'''
+        group_id = event.get_group_id() or "default"
+        period = period.strip().lower()
+        if period == "week":
+            days, label = 7, "最近7天"
+        elif period == "month":
+            days, label = 30, "最近30天"
+        elif period.isdigit():
+            days = int(period)
+            if days <= 0:
+                days = 1
+            label = f"最近{days}天"
+        else:
+            days, label = 1, "今日"
+        async for result in self._render_and_send_rank(event, group_id, days, label, is_all=False):
+            yield result
+
+    @filter.command("steam allrank")
+    async def steam_allrank(self, event: AstrMessageEvent, period: str = ""):
+        '''查看所有群玩家游戏时长排行榜（默认今日，可选 week/month）'''
+        period = period.strip().lower()
+        if period == "week":
+            days, label = 7, "最近7天"
+        elif period == "month":
+            days, label = 30, "最近30天"
+        elif period.isdigit():
+            days = int(period)
+            if days <= 0:
+                days = 1
+            label = f"最近{days}天"
+        else:
+            days, label = 1, "今日"
+        async for result in self._render_and_send_rank(event, None, days, label, is_all=True):
+            yield result
+
+    @filter.command("steam rank_on")
+    async def steam_rank_on(self, event: AstrMessageEvent):
+        '''开启本群每日8:30自动推送昨日排行榜'''
+        group_id = event.get_group_id() or "default"
+        if group_id not in self.rank_push_groups:
+            self.rank_push_groups.append(group_id)
+            self._save_rank_push_groups()
+        yield event.plain_result(f"已开启本群每日排行榜自动推送，将于每天 8:30 推送昨日（凌晨4:00~次日4:00）排行榜。")
+
+    @filter.command("steam rank_off")
+    async def steam_rank_off(self, event: AstrMessageEvent):
+        '''关闭本群每日排行榜自动推送'''
+        group_id = event.get_group_id() or "default"
+        if group_id in self.rank_push_groups:
+            self.rank_push_groups.remove(group_id)
+            self._save_rank_push_groups()
+        yield event.plain_result(f"已关闭本群每日排行榜自动推送。")
+
     @filter.command("steam help")
     async def steam_help(self, event: AstrMessageEvent):
         '''显示所有指令帮助'''
@@ -1141,8 +1419,14 @@ class SteamStatusMonitorV2(Star):
             "/steam addid [SteamID] - 添加SteamID\n"
             "/steam delid [SteamID] - 删除SteamID\n"
             "/steam push_group [SteamID] - 添加id到联动推送的副群\n"
-            "/steam delpush_group [SteamID] - 删除id联动推送的副群\n"
+            "/steam delpush_group [SteamID] [群号可选] - 删除id联动推送的副群，可指定群号\n"
             "/steam openbox [SteamID] - 查看指定SteamID的全部信息\n"
+            "/steam rank - 查看本群今日游戏时长排行榜\n"
+            "/steam rank 天数 - 查看本群指定天数排行榜（如 7, 30）\n"
+            "/steam allrank - 查看所有群今日排行榜\n"
+            "/steam allrank 天数 - 查看所有群指定天数排行榜\n"
+            "/steam rank_on - 开启每日排行榜自动推送（8:30推送昨日）\n"
+            "/steam rank_off - 关闭每日排行榜自动推送\n"
             "/steam rs - 清除状态并初始化\n"
             "/steam help - 显示本帮助\n"
         )
@@ -1158,7 +1442,7 @@ class SteamStatusMonitorV2(Star):
             yield result
 
     @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("steam of")
+    @filter.command("steam off")
     async def steam_off(self, event: AstrMessageEvent):
         '''彻底停止本群Steam状态监控轮询，释放轮询资源'''
         group_id = str(event.get_group_id()) if hasattr(event, 'get_group_id') else 'default'
@@ -1372,6 +1656,118 @@ class SteamStatusMonitorV2(Star):
             self.config.save_config()
         yield event.plain_result(f"已删除群聊 {group_id} 的所有SteamID，相关状态数据已清空。")
 
+    def _get_day_key(self, offset_days=0):
+        """基于凌晨4:00边界的日期键
+        offset_days=0: 当前所处"天"的日期键
+        offset_days=-1: 前一天的日期键
+        """
+        now = datetime.now()
+        if now.hour < 4:
+            now = now - timedelta(days=1)
+        now = now + timedelta(days=offset_days)
+        return now.strftime("%Y-%m-%d")
+
+    def _get_rank_data(self, days=1, group_id=None, base_day_offset=0):
+        """聚合游玩时长数据，返回已排序的排行榜列表
+        Args:
+            days: 1=今日, 7=最近7天, 30=最近30天
+            group_id: 指定群则只统计该群的SteamID，None则统计全部
+        Returns:
+            [{sid, name, total_minutes, games: [{name, minutes}]}] 按总时长降序
+        """
+        try:
+            today_str = self._get_day_key(base_day_offset)
+            base_date = datetime.strptime(today_str, "%Y-%m-%d")
+            date_keys = []
+            for i in range(days):
+                d = base_date - timedelta(days=i)
+                date_keys.append(d.strftime("%Y-%m-%d"))
+            # 确定要统计的 SteamID 集合
+            if group_id:
+                target_sids = set(self.group_steam_ids.get(group_id, []))
+            else:
+                target_sids = set()
+                for gids in self.group_steam_ids.values():
+                    target_sids.update(gids)
+            if not target_sids:
+                return []
+            # 聚合
+            merged = {}  # {sid: {gameid: {name, minutes}}}
+            for date_key in date_keys:
+                day_data = self.play_records.get(date_key, {})
+                for sid, games in day_data.items():
+                    if sid not in target_sids:
+                        continue
+                    if sid not in merged:
+                        merged[sid] = {}
+                    for gid, info in games.items():
+                        # 防御性清洗：name 可能被缓存污染为 tuple/list
+                        raw_name = info.get("name", "未知游戏")
+                        if isinstance(raw_name, (tuple, list)):
+                            raw_name = raw_name[0] if raw_name else "未知游戏"
+                        raw_name = str(raw_name) if raw_name else "未知游戏"
+                        if gid not in merged[sid]:
+                            merged[sid][gid] = {"name": raw_name, "minutes": 0}
+                        merged[sid][gid]["minutes"] += info.get("minutes", 0)
+                        merged[sid][gid]["name"] = info.get("name", merged[sid][gid]["name"])
+            # 构建排行榜列表
+            rank_list = []
+            for sid, games in merged.items():
+                total = sum(g["minutes"] for g in games.values())
+                if total <= 0:
+                    continue
+                game_list = sorted(
+                    [{"name": g["name"], "minutes": g["minutes"]} for g in games.values()],
+                    key=lambda x: x["minutes"],
+                    reverse=True
+                )
+                rank_list.append({
+                    "sid": sid,
+                    "name": game_list[0]["name"] if game_list else sid,  # 临时用游戏名占位，后续替换为玩家名
+                    "total_minutes": total,
+                    "games": game_list
+                })
+            rank_list.sort(key=lambda x: x["total_minutes"], reverse=True)
+            return rank_list
+        except Exception as e:
+            logger.error(f"[排行榜] 聚合数据异常: {e}")
+            return []
+
+    def _record_playtime(self, sid, gameid, game_name, duration_min):
+        """记录游玩时长到 play_records，带5分钟去重（防止多群重复记录）"""
+        try:
+            if duration_min <= 0 or not gameid:
+                return
+            # 防御性清洗：确保 game_name 是字符串（可能被缓存污染为 tuple/list）
+            if isinstance(game_name, (tuple, list)):
+                game_name = game_name[0] if game_name else "未知游戏"
+            game_name = str(game_name) if game_name else "未知游戏"
+            cache_key = (str(sid), str(gameid))
+            now = time.time()
+            last_ts = self._recorded_quit_cache.get(cache_key, 0)
+            if now - last_ts < 300:
+                logger.debug(f"[排行榜] 去重跳过: {sid} {game_name} (上次记录{int(now-last_ts)}秒前)")
+                return
+            self._recorded_quit_cache[cache_key] = now
+            today_key = self._get_day_key(0)
+            if today_key not in self.play_records:
+                self.play_records[today_key] = {}
+            if str(sid) not in self.play_records[today_key]:
+                self.play_records[today_key][str(sid)] = {}
+            gid = str(gameid)
+            if gid not in self.play_records[today_key][str(sid)]:
+                self.play_records[today_key][str(sid)][gid] = {"name": game_name, "minutes": 0}
+            self.play_records[today_key][str(sid)][gid]["minutes"] += int(duration_min)
+            self.play_records[today_key][str(sid)][gid]["name"] = game_name
+            self._data_dirty = True
+            logger.info(f"[排行榜] 记录游玩时长: {sid} {game_name} +{int(duration_min)}分钟")
+            # 清理过期的去重缓存（超过10分钟）
+            expired = [k for k, v in self._recorded_quit_cache.items() if now - v > 600]
+            for k in expired:
+                self._recorded_quit_cache.pop(k, None)
+        except Exception as e:
+            logger.error(f"[排行榜] 记录游玩时长异常: {e}")
+
     async def _delayed_quit_check(self, group_id, sid, gameid):
         await asyncio.sleep(180)
         info = self.group_pending_quit.get(group_id, {}).get(sid, {}).get(gameid)
@@ -1388,6 +1784,8 @@ class SteamStatusMonitorV2(Star):
                             break
                     await asyncio.sleep(1)
             info["notified"] = True
+            # >>> 排行榜数据采集：记录本次游玩时长（在推送/return之前执行，确保即使关闭通知也能记录）<<<
+            self._record_playtime(sid, gameid, info.get("game_name", "未知游戏"), info.get("duration_min", 0))
             # 游戏结束通知开关：关闭则跳过推送，但仍清理成就任务和 pending_quit
             if not self.config.get('enable_game_end_notify', True):
                 key = (group_id, sid, gameid)
@@ -1881,18 +2279,24 @@ class SteamStatusMonitorV2(Star):
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("steam delpush_group")
-    async def steam_delpush_group(self, event: AstrMessageEvent, steamid: str):
-        '''将本群从指定SteamID的联动推送组移除'''
-        group_id = str(event.get_group_id()) if hasattr(event, 'get_group_id') else 'default'
+    async def steam_delpush_group(self, event: AstrMessageEvent, steamid: str, target_group: str = ''):
+        '''将当前群/指定群从SteamID的联动推送组移除；可传 target_group 指定群号'''
+        if target_group:
+            group_id = target_group.strip()
+        else:
+            group_id = str(event.get_group_id()) if hasattr(event, 'get_group_id') else 'default'
         if not steamid.isdigit() or len(steamid) != 17:
             yield event.plain_result("SteamID无效（需为64位数字串，17位）")
             return
         if steamid not in self.push_groups or group_id not in self.push_groups[steamid]:
-            yield event.plain_result("本群未在该SteamID的推送组中。")
+            yield event.plain_result(f"群 {group_id} 未在 SteamID {steamid} 的推送组中。")
             return
         self.push_groups[steamid].remove(group_id)
         if not self.push_groups[steamid]:
             self.push_groups.pop(steamid)
         self._save_push_groups()
-        yield event.plain_result(f"本群已从SteamID {steamid} 的联动推送组移除。")
+        if target_group:
+            yield event.plain_result(f"已从 SteamID {steamid} 的联动推送组中移除群 {group_id}。")
+        else:
+            yield event.plain_result(f"本群已从 SteamID {steamid} 的联动推送组移除。")
 
