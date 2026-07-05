@@ -29,7 +29,7 @@ from .superpower_util import load_abilities, get_daily_superpower  # 新增导�
     "steam_status_monitor_V3",
     "Maoer",
     "Steam状态监控插件V2版",
-    "3.1.5",
+    "3.1.6",
     "https://github.com/Maoer233/astrbot_plugin_steam_status_monitor"
 )
 class SteamStatusMonitorV3(Star):
@@ -458,43 +458,46 @@ class SteamStatusMonitorV3(Star):
                 now = time.time()
                 next_minute = (int(now) // 60 + 1) * 60
                 await asyncio.sleep(max(0, next_minute - now))
-                # 0秒：遍历所有群和SteamID，按动态间隔判断是否需要查询
+                # 0秒：跨群收集所有到点的SteamID，合并为一次批量查询（N群=1次API调用+自动去重）
                 group_ids = list(self.group_steam_ids.keys())
-                poll_tasks = []
+                group_sids = {}  # {group_id: [sid, ...]}
+                all_sids_set = set()
+                now2 = time.time()
                 for group_id in group_ids:
                     if not self.group_monitor_enabled.get(group_id, True):
                         continue
                     steam_ids = self.group_steam_ids.get(group_id, [])
                     next_poll = self.next_poll_time.setdefault(group_id, {})
-                    now2 = time.time()
-                    # 只查询到点的SteamID
                     sids_to_query = [sid for sid in steam_ids if now2 >= next_poll.get(sid, 0)]
                     if not sids_to_query:
                         continue
-                    async def query_one_group(gid, sids):
-                        round_msg_lines = []
-                        # 批量预拉取本群待查 sid 的状态，降低 API 调用次数避免 Steam 限流
-                        status_map = await self.fetch_player_statuses_batch(sids)
-                        tasks = []
-                        for sid in sids:
-                            # 命中批量结果则用 status_override，未命中则降级为单查
-                            override = status_map.get(sid)
-                            tasks.append(self.check_status_change(gid, single_sid=sid, status_override=override))
-                        if tasks:
-                            # return_exceptions=True：单个 sid 异常不影响其他 sid，避免整个群轮询崩溃
-                            results = await asyncio.gather(*tasks, return_exceptions=True)
-                            for msg in results:
-                                if isinstance(msg, Exception):
-                                    logger.error(f"[轮询] check_status_change 异常: {msg} (gid={gid})")
-                                    continue
-                                if msg:
-                                    round_msg_lines.append(msg)
-                        if round_msg_lines:
-                            self._last_round_logs.append((gid, "\n".join(round_msg_lines)))
-                    poll_tasks.append(query_one_group(group_id, sids_to_query))
-                if poll_tasks:
-                    # return_exceptions=True：单个群异常不影响其他群
-                    await asyncio.gather(*poll_tasks, return_exceptions=True)
+                    group_sids[group_id] = sids_to_query
+                    all_sids_set.update(sids_to_query)
+                if not group_sids:
+                    await asyncio.sleep(40)  # 本轮无到点，跳过
+                    continue
+                # 一次批量查询所有到点SteamID（去重），大幅减少API调用
+                all_sids = list(all_sids_set)
+                global_status_map = await self.fetch_player_statuses_batch(all_sids)
+                # 各群并行处理状态变更检测
+                async def query_one_group(gid, sids):
+                    round_msg_lines = []
+                    tasks = []
+                    for sid in sids:
+                        override = global_status_map.get(sid)
+                        tasks.append(self.check_status_change(gid, single_sid=sid, status_override=override))
+                    if tasks:
+                        results = await asyncio.gather(*tasks, return_exceptions=True)
+                        for msg in results:
+                            if isinstance(msg, Exception):
+                                logger.error(f"[轮询] check_status_change 异常: {msg} (gid={gid})")
+                                continue
+                            if msg:
+                                round_msg_lines.append(msg)
+                    if round_msg_lines:
+                        self._last_round_logs.append((gid, "\n".join(round_msg_lines)))
+                poll_tasks = [query_one_group(gid, sids) for gid, sids in group_sids.items()]
+                await asyncio.gather(*poll_tasks, return_exceptions=True)
                 # 40秒统一输出日志
                 await asyncio.sleep(40)
                 if self._last_round_logs:
