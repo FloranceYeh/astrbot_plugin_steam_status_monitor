@@ -1663,7 +1663,7 @@ class SteamStatusMonitorV3(Star):
                 self.data_dir, steamid, player_name, avatar_url, gameid, zh_game_name,
                 end_time_str, tip_text, duration_h, sgdb_api_key=self.SGDB_API_KEY, font_path=font_path, sgdb_game_name=en_game_name, appid=gameid
             , proxy=self.proxy)
-            msg = f"👋 {player_name} 不玩 {zh_game_name} 了\n游玩时间 {duration_h:.1f}小时"
+            msg = f"🚁🚁🚁尊贵的 {player_name} 不玩 {zh_game_name} 了🚁🚁🚁\n游玩时间 {duration_h:.1f}小时"
             import tempfile
             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
                 tmp.write(img_bytes)
@@ -1879,7 +1879,7 @@ class SteamStatusMonitorV3(Star):
                 time_str = f"{duration_min:.1f}分钟"
             else:
                 time_str = f"{duration_min/60:.1f}小时"
-            msg = f"👋 {info['name']} 不玩 {info['game_name']}了\n游玩时间 {time_str}"
+            msg = f"🚁🚁🚁尊贵的 {info['name']} 不玩 {info['game_name']} 了🚁🚁🚁\n游玩时间 {time_str}"
             # 推送到主群和所有联动群
             notify_sessions = []
             notify_session = getattr(self, 'notify_sessions', {}).get(group_id, None)
@@ -2048,7 +2048,7 @@ class SteamStatusMonitorV3(Star):
                     continue  # 只推送网络波动提醒，跳过后续逻辑
                 # 修复：补充开始游戏推送逻辑
                 start_play_times.setdefault(sid, {})[current_gameid] = now
-                msg = f"🟢【{name}】开始游玩 {zh_game_name}"
+                msg = f"🚁🚁🚁尊贵的【{name}】正在游玩 {zh_game_name} 🚁🚁🚁"
                 # 推送到主群和所有push_group
                 notify_sessions = []
                 notify_session = getattr(self, 'notify_sessions', {}).get(group_id, None)
@@ -2086,7 +2086,7 @@ class SteamStatusMonitorV3(Star):
                         # 按 notify_send_text / notify_send_image 开关组装消息链
                         msg_chain = []
                         if send_text:
-                            msg_chain.append(Plain(f"🟢【{name}】开始游玩 {zh_game_name}"))
+                            msg_chain.append(Plain(f"🚁🚁🚁尊贵的【{name}】正在游玩 {zh_game_name} 🚁🚁🚁"))
                         if img_path:
                             msg_chain.append(Image.fromFileSystem(img_path))
                         if not msg_chain:
@@ -2186,7 +2186,7 @@ class SteamStatusMonitorV3(Star):
                         time_str = f"{duration_min:.1f}分钟"
                     else:
                         time_str = f"{duration_min/60:.1f}小时"
-                    msg = f"👋 {info['name']} 不玩 {info['game_name']}了\n游玩时间 {time_str}"
+                    msg = f"🚁🚁🚁尊贵的 {info['name']} 不玩 {info['game_name']} 了🚁🚁🚁\n游玩时间 {time_str}"
                     try:
                         # 推送到主群和所有联动群
                         notify_sessions = []
