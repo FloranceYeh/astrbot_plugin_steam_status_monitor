@@ -29,7 +29,7 @@ from .superpower_util import load_abilities, get_daily_superpower  # 新增导�
     "steam_status_monitor_V3",
     "Maoer",
     "Steam状态监控插件V2版",
-    "3.1.7",
+    "3.1.8",
     "https://github.com/Maoer233/astrbot_plugin_steam_status_monitor"
 )
 class SteamStatusMonitorV3(Star):
@@ -1112,17 +1112,20 @@ class SteamStatusMonitorV3(Star):
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("steam delid")
-    async def steam_delid(self, event: AstrMessageEvent, steamid: str):
-        '''从本群监控组删除SteamID（分群）'''
-        group_id = str(event.get_group_id()) if hasattr(event, 'get_group_id') else 'default'
+    async def steam_delid(self, event: AstrMessageEvent, steamid: str, group_id_param: str = ""):
+        '''从监控组删除SteamID；可选传群号跨群删除：/steam delid [SteamID] [群号]'''
+        group_id = group_id_param.strip() if group_id_param.strip() else (str(event.get_group_id()) if hasattr(event, 'get_group_id') else 'default')
         steam_ids = self.group_steam_ids.get(group_id, [])
+        if not steam_ids:
+            yield event.plain_result(f"群 {group_id} 没有监控任何SteamID")
+            return
         if steamid not in steam_ids:
-            yield event.plain_result("该SteamID不存在于本群监控组")
+            yield event.plain_result(f"该SteamID不存在于群 {group_id} 的监控组")
             return
         steam_ids.remove(steamid)
         self.group_steam_ids[group_id] = steam_ids
-        self._save_group_steam_ids()  # 新增：保存到 steam_groups.json
-        yield event.plain_result(f"已为本群删除SteamID: {steamid}")
+        self._save_group_steam_ids()
+        yield event.plain_result(f"已为群 {group_id} 删除SteamID: {steamid}")
 
     @filter.command("steam list")
     async def steam_list(self, event: AstrMessageEvent):
