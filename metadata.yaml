@@ -1,8 +1,9 @@
-name: Steam 班长 FLF改
+name: steam_status_monitor_V3
+display_name: Steam 班长 FLF改
 desc: 用于监控steam指定玩家的在线/离线/游戏状态变更，并在状态变化时推送通知。
 author: Florance
 repo: https://github.com/FloranceYeh/astrbot_plugin_steam_status_monitor
 version: 3.1.9
 tags:
   - steam
-social_link: https://florance.top
+social_link: https://Florance.top
