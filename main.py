@@ -27,6 +27,10 @@ from .superpower_util import load_abilities, get_daily_superpower  # 新增导�
 
 @register(
     "steam_status_monitor_V3",
+    "Florance",
+    "Steam 班长 FLF改",
+    "3.1.9",
+    "https://github.com/FloranceYeh/astrbot_plugin_steam_status_monitor"
 )
 class SteamStatusMonitorV3(Star):
     def _get_group_data_path(self, group_id, key):
