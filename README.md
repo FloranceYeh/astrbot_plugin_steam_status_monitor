@@ -1,7 +1,6 @@
 # Steam 状态监控插件V3
 
 ## 访问统计
-![访问统计](https://count.getloli.com/get/@astrbot_ssm?theme=rule34)
 
 本插件是专为AstrBot设计的插件，用于定时轮询 Steam Web API，监控指定玩家的在线/离线/游戏状态变更，并在状态变化时推送通知。支持多 SteamID 监控，自动记录游玩日志，支持群聊分组，数据持久化，支持丰富指令。
 
@@ -69,13 +68,6 @@
 - 如果出现未知的无法提醒，但轮询显示正常的情况，请使用 `/steam on/off` 进行修复。
 - 监控人数较多时，建议适当调高 `max_group_size` 并保持智能轮询，以兼顾时效与 Steam 限流。
 
-## 演示截图
-![开始游戏示例](https://raw.githubusercontent.com/Maoer233/astrbot_plugin_steam_status_monitor/main/str.png)
-![结束游戏示例](https://raw.githubusercontent.com/Maoer233/astrbot_plugin_steam_status_monitor/main/stop.png)
-![成就推送示例](https://raw.githubusercontent.com/Maoer233/astrbot_plugin_steam_status_monitor/main/achievement.png)
-![排行榜示例](https://raw.githubusercontent.com/Maoer233/astrbot_plugin_steam_status_monitor/main/allrank.png)
-
-
 ## 指令列表
 - `/steam on` 启动本群Steam状态监控
 - `/steam off` 停止本群Steam状态监控
@@ -105,67 +97,3 @@
 - httpx
 - Pillow
 - AstrBot 框架
-
-### 依赖安装方法
-如果显示缺少依赖，你可以尝试下载以下工具来进行修复
-pip install httpx pillow
-
-可以添加QQ：1912584909 来反馈功能和建议 闲聊也欢迎喵~
-
-## ⭐ Stars
-
-> 如果本项目对您的生活 / 工作产生了帮助，或者您关注本项目的未来发展，请给项目 Star，这是我维护这个开源项目的动力 ❤️。
-
-## 更新记录
-- V3.1.8（2026/07/05）
-  - **指令增强**：/steam delid 支持跨群删除（私聊传群号），退群也能清理监控
-
-- V3.1.7（2026/07/05）
-  - **Bug 修复**：重启插件后不再重复播报开始/结束游戏通知（初始化静默建立状态基线）
-  - **Bug 修复**：移除持久化加载时错误的 gameid 清除逻辑，消除重启误判
-
-- V3.1.6（2026/07/05）
-  - **性能优化**：主轮询跨群合并批量查询，N个群从N次API调用降为1次（自动去重）
-
-- V3.1.5（2026/07/05）
-  - **Bug 修复**：定时排行榜推送 (rank_on / rank_on all) 目标群为空导致无推送
-  - **新增配置**：排行榜推送时间可自定义（rank_push_hour / rank_push_minute，默认 8:30）
-  - **指令优化**：/steam rank_on 整合 list（查看状态）/ test（即刻推送）/ del（删除推送）
-
-- V3.1.4（2026/07/05）
-  - **性能优化**：steam_list / steam_alllist / steam_on 初始化全部改用批量查询接口，大幅减少 API 调用次数
-
-- V3.1.2（2026/07/04）
-  - **Bug 修复**：排行榜 (rank/allrank) 封面获取日期键与数据聚合对齐，修复封面不显示
-  - **Bug 修复**：排行榜 (rank/allrank) 新增 Steam 头像框渲染
-  - **Bug 修复**：玩家切换游戏时，上一款游戏游玩时长不再丢失
-
-- V3.1.1（2026/07/04）
-  - **新增头像框显示**：开始游戏/结束游戏/list/rank 图片均支持显示 Steam 头像框
-  - **缓存配置化**：头像/头像框/封面缓存时间可在 WebUI 配置，默认头像1天/头像框7天/封面永不
-  - **alllist图片渲染**： steam alllist 改为图片渲染
-  - **权限分级**：新增 permission_level 配置（1=管理员限定 2=查询指令放开 3=开关+添加ID放开）
-
-
-- V3.1.0（2026/07/04）
-  - **排行榜功能**：新增游戏时长排行榜，支持 `steam rank` 本群排行和 `steam allrank` 所有群排行
-  - 参数由 week/month 改为任意数字天数（如 `steam rank 15`），默认返回当天
-  - 每天凌晨 4:00 为天分界点，定时播报默认早上 8:30 推送昨日排行榜
-  - `steam rank_on` / `steam rank_off` 开启/关闭每群排行榜自动推送
-  - 修复重启插件后已通知过的退出记录重复推送的问题
-
-- V3.0.0（2026/07/03）重大更新
-  - **性能与稳定性大幅优化**：采用 Steam 官方批量查询接口（单次最多 100 个 ID），大幅降低 API 调用次数，从根本上避免触发 Steam 限流（HTTP 429 / x-eresult: 84）及 IP 被封禁；批量失败时自动降级为单查，保证可用性
-  - **轮询架构重构**：重写全局轮询循环，按动态到点查询 + 异常隔离（`return_exceptions=True`），修复在线玩家不再轮询、离线玩家轮询间隔越来越长的问题
-  - **WebUI 卡顿修复**：引入持久化数据脏标志 + 节流写盘（默认 300 秒一次），避免高频写盘拖慢 AstrBot 主进程与 WebUI
-  - **退出推送修复**：新增延迟退出检查与去重机制（`_pending_quit_tasks`），修复同一玩家同一游戏在短时间内重复触发退出通知的问题；优化推送会话管理，修复 `未设置推送会话，无法发送消息` 错误
-  - **多种 ID 输入格式**：`addid` 现支持 SteamID64、个人资料链接、自定义 vanity URL（自动调用 ResolveVanityURL 解析）、`s.team` 短链、8 位好友码
-  - **通知开关精细化**：新增 `enable_game_end_notify`（可单独关闭游戏结束通知）、`notify_send_image` / `notify_send_text`（图片/文本推送可独立控制）
-  - **配置项开放**：`max_group_size`（单群最大监控人数）由硬编码改为可配置项，方便大群 / 粉丝群使用
-  - **网络代理支持**：新增 `enable_proxy` / `proxy_url` 配置项，支持 http / https / socks5 代理（来自社区 PR）
-  - **字体自动管理**：启动时自动检测并加载插件 `fonts` 目录下的 NotoSansHans 系列字体，缓存到数据目录，渲染更稳定
-  - **成就系统优化**：新增 `enable_achievement_poll` 开关，获取成就失败的游戏自动加入黑名单跳过轮询
-  - **游戏名中文化**：优先通过 Steam 商店 API 获取游戏中文名，无则回退英文名
-- V2.2.0
-  添加了缺失的封面的图片显示
-  添加了新功能，可以将已经轮询中账号，联动推送到多个副群（适用于多个粉丝群的情况）
